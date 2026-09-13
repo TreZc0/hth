@@ -5,6 +5,7 @@ pub(crate) mod lifecycle;
 use {
     crate::{
         cal::{Entrant, Entrants, Race, RaceSchedule},
+        discord_scheduled_events::{self, DiscordCtx},
         event::{
             self,
             roles::{Signup, VolunteerSignupStatus},
@@ -1090,6 +1091,7 @@ async fn sync_outbound_exports(
 pub(crate) async fn check_and_sync_all_exports(
     pool: &PgPool,
     http_client: &reqwest::Client,
+    discord_ctx: &RwFuture<DiscordCtx>,
 ) -> Result<(), Error> {
     let Ok(_guard) = SYNC_LOCK.try_lock() else {
         return Ok(());
@@ -1102,7 +1104,7 @@ pub(crate) async fn check_and_sync_all_exports(
         return Ok(());
     }
     let exports = sync_outbound_exports(pool, http_client).await?;
-    poll_all_exports(pool, http_client, &exports).await?;
+    poll_all_exports(pool, http_client, discord_ctx, &exports).await?;
     Ok(())
 }
 
@@ -1175,6 +1177,7 @@ fn is_no_stream_channel(channel: &ScheduleChannel) -> bool {
 async fn poll_export(
     pool: &PgPool,
     http_client: &reqwest::Client,
+    discord_ctx: &RwFuture<DiscordCtx>,
     export: &ExportConfig,
 ) -> Result<(), Error> {
     let (from, to) = poll_window(Utc::now());
@@ -1290,6 +1293,23 @@ async fn poll_export(
         }
         if changed {
             race.save(&mut transaction).await?;
+            if race.discord_scheduled_event_id.is_some() {
+                let event = race.event(&mut transaction).await?;
+                if let Err(error) = discord_scheduled_events::update_discord_scheduled_event(
+                    &*discord_ctx.read().await,
+                    &mut transaction,
+                    &race,
+                    &event,
+                    http_client,
+                )
+                .await
+                {
+                    eprintln!(
+                        "Failed to update Discord scheduled event for race {} after SpeedGaming channel sync: {error}",
+                        race.id
+                    );
+                }
+            }
         }
         sqlx::query!(
             r#"
@@ -1310,6 +1330,7 @@ async fn poll_export(
 async fn poll_all_exports(
     pool: &PgPool,
     http_client: &reqwest::Client,
+    discord_ctx: &RwFuture<DiscordCtx>,
     exports: &[ExportConfig],
 ) -> Result<(), Error> {
     let exports = exports.to_vec();
@@ -1319,7 +1340,7 @@ async fn poll_all_exports(
             future::join_all(
                 batch
                     .iter()
-                    .map(|export| poll_export(pool, http_client, export)),
+                    .map(|export| poll_export(pool, http_client, discord_ctx, export)),
             )
             .await,
         ) {

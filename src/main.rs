@@ -483,6 +483,7 @@ async fn main(Args { port, subcommand }: Args) -> Result<(), Error> {
         });
         let speedgaming_export_task = tokio::spawn(speedgaming_export_manager(
             db_pool.clone(),
+            discord_builder.ctx_fut.clone(),
             http_client,
             rocket.shutdown(),
         ))
@@ -664,6 +665,7 @@ async fn zsr_export_manager(
 /// Background task for exporting races and volunteer requests to SpeedGaming.
 async fn speedgaming_export_manager(
     db_pool: PgPool,
+    discord_ctx: RwFuture<DiscordCtx>,
     http_client: reqwest::Client,
     shutdown: rocket::Shutdown,
 ) -> Result<(), Error> {
@@ -687,7 +689,7 @@ async fn speedgaming_export_manager(
                 }
             }
             _ = interval.tick() => {
-                if let Err(error) = speedgaming_export::check_and_sync_all_exports(&db_pool, &http_client).await {
+                if let Err(error) = speedgaming_export::check_and_sync_all_exports(&db_pool, &http_client, &discord_ctx).await {
                     eprintln!("Error syncing SpeedGaming exports: {error}");
                 }
             }
